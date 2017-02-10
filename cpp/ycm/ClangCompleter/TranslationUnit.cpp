@@ -478,6 +478,93 @@ DocumentationData TranslationUnit::GetDocsForLocationInFile(
   return DocumentationData( canonical_cursor );
 }
 
+static enum CXVisitorResult __references_visitor(
+  void *context,
+  CXCursor cursor,
+  CXSourceRange range ) {
+
+  // Here we just need the range info of the cursor, So ignore the
+  // cursor parameter.
+  (void)cursor;
+  std::vector< Range > *ranges =
+      reinterpret_cast< std::vector < Range > * >( context );
+
+  ranges->push_back( Range( range ) );
+  return CXVisit_Continue;
+}
+
+std::vector< Range >
+TranslationUnit::GetReferencesRangeList(
+  int line,
+  int column,
+  const std::vector< UnsavedFile > &unsaved_files,
+  bool reparse,
+  bool local_only ) {
+  if ( reparse )
+    Reparse( unsaved_files );
+
+  unique_lock< mutex > lock( clang_access_mutex_ );
+  std::vector< Range > ranges;
+
+  if ( !clang_translation_unit_ )
+    return ranges;
+
+  CXFile file = clang_getFile( clang_translation_unit_, filename_.c_str() );
+  CXCursor cursor = clang_getCursor( clang_translation_unit_,
+                                     clang_getLocation (
+                                       clang_translation_unit_,
+                                       file,
+                                       line,
+                                       column) );
+
+  // Here we can only find all the references in the current file,
+  // so we could not rename the cursor that is declared in other
+  // files.
+  if ( !local_only ) {
+    goto ll1;
+  }
+
+ll0:
+  if ( !CursorIsValid( cursor ) )
+    return ranges;
+  switch ( clang_getCursorLinkage( cursor ) ) {
+    case CXLinkage_External:
+      return ranges;
+    case CXLinkage_Invalid:
+      if ( CXCursor_MacroDefinition == clang_getCursorKind( cursor ) ) {
+        CXFile _file;
+        unsigned line, column, offset;
+        clang_getExpansionLocation( clang_getCursorLocation( cursor ),
+                &_file, &line, &column, &offset );
+        if ( clang_File_isEqual(file, _file) ) {
+          goto ll1;
+        }
+      }
+      cursor = clang_getCursorReferenced( cursor );
+      goto ll0;
+    case CXLinkage_NoLinkage:
+    case CXLinkage_Internal:
+    case CXLinkage_UniqueExternal:
+      goto ll1;
+  }
+
+ll1:
+  if ( !CursorIsValid( cursor ) )
+    return ranges;
+
+  CXCursorAndRangeVisitor visitor = {
+    .context = &ranges,
+    .visit = __references_visitor,
+  };
+
+  if( CXResult_Success != clang_findReferencesInFile( cursor,
+                                                      file,
+                                                      visitor ) ) {
+    ranges.clear();
+  }
+  return ranges;
+}
+
 CXCursor TranslationUnit::GetCursor( int line, int column ) {
   // ASSUMES A LOCK IS ALREADY HELD ON clang_access_mutex_!
   if ( !clang_translation_unit_ )
