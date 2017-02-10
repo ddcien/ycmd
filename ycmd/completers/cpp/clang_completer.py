@@ -151,6 +151,12 @@ class ClangCompleter( Completer ):
                                 reparse = False,
                                 func = 'GetDocsForLocationInFile',
                                 response_builder = _BuildGetDocResponse ) ),
+      'GetReferences'            : ( lambda self, request_data, args:
+         self._GetReferences( request_data ) ),
+      'GoToReferences'           : ( lambda self, request_data, args:
+         self._GetReferences( request_data ) ),
+      'RefactorRename'           : ( lambda self, request_data, args:
+         self._RefactorRename( request_data, args ) ),
     }
 
 
@@ -280,7 +286,7 @@ class ClangCompleter( Completer ):
         column,
         files,
         flags,
-        reparse)
+        reparse )
 
     if not message:
       message = "No semantic information available"
@@ -315,6 +321,69 @@ class ClangCompleter( Completer ):
     # in a nice way
 
     return responses.BuildFixItResponse( fixits )
+
+
+  def _GetReferences( self, request_data ):
+    filename = request_data['filepath']
+    if not filename:
+      raise ValueError(INVALID_FILE_MESSAGE)
+
+    flags = self._FlagsForRequest(request_data)
+    if not flags:
+      raise ValueError(NO_COMPILE_FLAGS_MESSAGE)
+
+    files = self.GetUnsavedFilesVector(request_data)
+    line = request_data['line_num']
+    column = request_data['column_num']
+    ref_ranges = getattr(self._completer, "GetReferencesRangeList")(
+            ToCppStringCompatible(filename),
+            line,
+            column,
+            files,
+            flags,
+            True,
+            False )
+    if not ref_ranges:
+      raise ValueError( 'No reference found!!!' )
+
+    return [_ResponseForLocation(ref.start_) for ref in ref_ranges]
+
+
+  def _RefactorRename( self, request_data, args ):
+    if len( args ) != 1:
+      raise ValueError( 'Please specify a new name to rename it to.\n'
+                        'Usage: RefactorRename <new name>' )
+
+    filename = request_data['filepath']
+    if not filename:
+      raise ValueError(INVALID_FILE_MESSAGE)
+
+    flags = self._FlagsForRequest(request_data)
+    if not flags:
+      raise ValueError(NO_COMPILE_FLAGS_MESSAGE)
+
+    files = self.GetUnsavedFilesVector(request_data)
+    line = request_data['line_num']
+    column = request_data['column_num']
+
+    ref_ranges = getattr(self._completer, "GetReferencesRangeList")(
+            ToCppStringCompatible(filename),
+            line,
+            column,
+            files,
+            flags,
+            True,
+            True )
+
+    if not ref_ranges:
+      raise ValueError( 'Not a local symbol!!!' )
+
+    return responses.BuildFixItResponse( [
+      responses.FixIt(
+        ref_ranges[ 0 ].start_,
+        [ responses.FixItChunk( args[ 0 ], ref ) for ref in ref_ranges ]
+      ) ] )
+
 
   def OnFileReadyToParse( self, request_data ):
     filename = request_data[ 'filepath' ]
